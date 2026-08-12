@@ -68,9 +68,8 @@ jobs:
           echo "BIN=$BIN" >> "$GITHUB_ENV"
 
       - name: Run tests
-        env:
-          GOOS: ${{ inputs.goos }}
-          GOARCH: ${{ inputs.goarch }}
+        # Native runner platform only: a test binary built for the cross
+        # target (e.g. windows) cannot be executed on this Linux host.
         run: go test ./...
 
       - name: Compress (linux only)
