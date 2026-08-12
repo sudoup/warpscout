@@ -26,7 +26,7 @@ on:
           - amd64
           - arm64
       version:
-        description: "Version stamped into the binary (leading 'v' is stripped)"
+        description: "Version stamped into the binary and used as the release tag (leading 'v' is stripped)"
         required: false
         default: dev
       compress:
@@ -36,7 +36,7 @@ on:
         type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-${{ github.event.inputs.branch }}-${{ github.event.inputs.goos }}-${{ github.event.inputs.goarch }}
@@ -77,6 +77,8 @@ jobs:
         run: upx --best --lzma "$BIN"
 
       - name: Package
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
           VERSION="${VERSION#v}"
           NAME="warpscout_${VERSION}_${{ inputs.goos }}_${{ inputs.goarch }}"
@@ -88,10 +90,22 @@ jobs:
             echo "ARCHIVE=$NAME.tar.gz" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: warpscout-${{ inputs.goos }}-${{ inputs.goarch }}
-          path: ${{ env.ARCHIVE }}
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          VERSION="${VERSION#v}"
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - attaching $ARCHIVE to it."
+            gh release upload "$TAG" "$ARCHIVE" --clobber
+          else
+            echo "Creating release $TAG."
+            gh release create "$TAG" "$ARCHIVE" \
+              --title "warpscout ${VERSION}" \
+              --notes "Manual build from \`${{ inputs.branch }}\` (${{ inputs.goos }}/${{ inputs.goarch }})."
+          fi
 
       - name: Summarize
         run: |
@@ -99,4 +113,4 @@ jobs:
           echo "- Branch: \`${{ inputs.branch }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Target: \`${{ inputs.goos }}/${{ inputs.goarch }}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- Version: \`${{ inputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Artifact: \`${{ env.ARCHIVE }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release: [v${{ inputs.version }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/v${{ inputs.version }})" >> "$GITHUB_STEP_SUMMARY"
