@@ -1,0 +1,103 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch, tag or commit SHA to build from"
+        required: true
+        default: master
+      goos:
+        description: "Target operating system"
+        required: true
+        default: linux
+        type: choice
+        options:
+          - linux
+          - windows
+          - darwin
+          - android
+      goarch:
+        description: "Target architecture"
+        required: true
+        default: amd64
+        type: choice
+        options:
+          - amd64
+          - arm64
+      version:
+        description: "Version stamped into the binary (leading 'v' is stripped)"
+        required: false
+        default: dev
+      compress:
+        description: "Compress the linux binary with UPX"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.event.inputs.branch }}-${{ github.event.inputs.goos }}-${{ github.event.inputs.goarch }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          CGO_ENABLED: 0
+          GOOS: ${{ inputs.goos }}
+          GOARCH: ${{ inputs.goarch }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          BIN=warpscout
+          [ "$GOOS" = windows ] && BIN=warpscout.exe
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION#v}" -o "$BIN" .
+          echo "BIN=$BIN" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        env:
+          GOOS: ${{ inputs.goos }}
+          GOARCH: ${{ inputs.goarch }}
+        run: go test ./...
+
+      - name: Compress (linux only)
+        if: inputs.goos == 'linux' && inputs.compress
+        run: upx --best --lzma "$BIN"
+
+      - name: Package
+        run: |
+          VERSION="${VERSION#v}"
+          NAME="warpscout_${VERSION}_${{ inputs.goos }}_${{ inputs.goarch }}"
+          if [ "${{ inputs.goos }}" = windows ]; then
+            zip "$NAME.zip" "$BIN"
+            echo "ARCHIVE=$NAME.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$NAME.tar.gz" "$BIN"
+            echo "ARCHIVE=$NAME.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: warpscout-${{ inputs.goos }}-${{ inputs.goarch }}
+          path: ${{ env.ARCHIVE }}
+
+      - name: Summarize
+        run: |
+          echo "## Build result" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Branch: \`${{ inputs.branch }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: \`${{ inputs.goos }}/${{ inputs.goarch }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: \`${{ inputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact: \`${{ env.ARCHIVE }}\`" >> "$GITHUB_STEP_SUMMARY"
