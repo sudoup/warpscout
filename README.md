@@ -265,7 +265,7 @@ On a second run the `id` and `token` are taken from the file and only the keys c
 
 Normally this is a simple process of two requests. On a filtered network those requests do not get out at all.
 
-WARPSCOUT first checks whether `api.cloudflareclient.com` answers. If it does not, it retries through the default relay: a small reverse proxy that DPI usually leaves alone. `-relay URL` points it at a relay of your own, `-relay none` skips this step entirely. How to deploy your own is described in the [nellimonix/base-relay](https://github.com/nellimonix/base-relay) repository.
+WARPSCOUT first checks whether `api.cloudflareclient.com` answers. If it does not, `-relay URL` retries through a relay of your own (a small reverse proxy that DPI usually leaves alone) - relayed registration is opt-in, so no third-party server is ever contacted unless you point it at one. How to deploy your own is described in the [nellimonix/base-relay](https://github.com/nellimonix/base-relay) repository.
 
 If the relay is unreachable too, WARPSCOUT registers _through_ a WARP tunnel: it goes over endpoint addresses, brings up a tunnel to the first one that completes a handshake, and sends the same registration requests through it. AmneziaWG is tried first, then plain WireGuard, and for AmneziaWG a few different first packets (`I1`) are cycled through as well, until one gets past the filter.
 

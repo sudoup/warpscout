@@ -1406,9 +1406,9 @@ func TestApplyRelay(t *testing.T) {
 			t.Errorf("-relay %q must be a parse error", bad)
 		}
 	}
-	o = options{relay: defaultRelay}
+	o = options{relay: "https://relay.example.com"} // relayOff is the default
 	if err := applyRelay(&o); err != nil {
-		t.Errorf("defaultRelay must parse: %v", err)
+		t.Errorf("a valid relay URL must parse: %v", err)
 	}
 }
 

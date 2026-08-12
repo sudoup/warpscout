@@ -137,7 +137,7 @@ var (
 
 	registerGroup = flagGroup{"Registration", append([]flagSpec{
 		{"x", "proxy", "URL", "http(s)/socks5 proxy for registration"},
-		{"", "relay", "URL", "relay to try when the API is unreachable, before the WARP tunnel (\"none\" disables it)"},
+		{"", "relay", "URL", "relay to try when the API is unreachable, before the WARP tunnel (default: off)"},
 		{"", "fresh", "", "ignore the existing account file and register a brand-new account"},
 	}, netSpecs...)}
 
@@ -249,7 +249,7 @@ func setupRegisterFlags(fs *flag.FlagSet, o *options) {
 	addNetFlags(fs, o)
 	addAWGFlags(fs, o)
 	strFlag(fs, &o.proxy, "", "x", "proxy")
-	fs.StringVar(&o.relay, "relay", defaultRelay, "")
+	fs.StringVar(&o.relay, "relay", relayOff, "")
 	fs.BoolVar(&o.freshAccount, "fresh", false, "")
 	fs.BoolVar(&o.plain, "plain", false, "")
 	// The tunnel fallback sweeps both protocols anyway; awg goes first because it
