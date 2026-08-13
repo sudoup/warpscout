@@ -1087,6 +1087,8 @@ func TestNoEndpointMsg(t *testing.T) {
 		{"awg without gen-i1", options{proto: protoAWG}, "no working endpoints found - try -gen-i1 quic"},
 		{"wg without gen-i1", options{proto: protoWG}, "no working endpoints found - try -p awg -gen-i1 quic"},
 		{"gen-i1 already set", options{proto: protoAWG, genI1: "quic"}, "no working endpoints found"},
+		{"masque", options{proto: protoMASQUE}, masqueBlockedMsg},
+		{"masque-h2", options{proto: protoMASQUEH2}, masqueBlockedMsg},
 		{"filters win over the hint", options{proto: protoAWG, colos: []string{"HEL"}}, "no endpoint landed on node HEL"},
 	}
 	for _, c := range cases {
@@ -1177,6 +1179,70 @@ func TestPicksTablePerNode(t *testing.T) {
 	}
 }
 
+func TestAccountToRotate(t *testing.T) {
+	dir := t.TempDir()
+
+	missing := filepath.Join(dir, "warpscout-account.json")
+	switch a, err := accountToRotate(missing); {
+	case err != nil:
+		t.Errorf("a missing account file failed instead of reading as absent: %v", err)
+	case a != (account{}):
+		t.Errorf("a missing account file returned %+v", a)
+	}
+
+	corrupt := filepath.Join(dir, "corrupt.json")
+	if err := os.WriteFile(corrupt, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accountToRotate(corrupt); err == nil {
+		t.Error("a corrupt account file was silently treated as absent")
+	}
+
+	incomplete := filepath.Join(dir, "incomplete.json")
+	if err := os.WriteFile(incomplete, []byte(`{"id":"x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accountToRotate(incomplete); err == nil {
+		t.Error("an account file with no keys was silently treated as absent")
+	}
+
+	good := filepath.Join(dir, "good.json")
+	want := account{ID: "x", PrivateKey: "priv", PeerPublicKey: "pub"}
+	if err := saveAccount(good, want); err != nil {
+		t.Fatal(err)
+	}
+	switch a, err := accountToRotate(good); {
+	case err != nil:
+		t.Errorf("a valid account file failed: %v", err)
+	case a.ID != want.ID:
+		t.Errorf("loaded account %+v, want id %q", a, want.ID)
+	}
+}
+
+func TestPicksTableEmptySubnetSortsLast(t *testing.T) {
+	defer func(saved []netip.Prefix) { pools = saved }(pools)
+	pools, _ = parseTargets("192.0.2.1/32,192.0.2.2/32")
+
+	lossy := endpointResult{
+		ip:       netip.MustParseAddr("192.0.2.2"),
+		endpoint: "192.0.2.2:2408",
+		tunPing:  10 * time.Millisecond,
+		loss:     10,
+		ok:       true,
+		durable:  true,
+	}
+
+	var buf bytes.Buffer
+	r := lipgloss.NewRenderer(&buf)
+	r.SetColorProfile(termenv.Ascii)
+	writePicksTable(&buf, newConStyles(r), []endpointResult{lossy}, nil, true)
+
+	out := buf.String()
+	if strings.Index(out, "no working endpoints") < strings.Index(out, lossy.endpoint) {
+		t.Errorf("an empty subnet sorted above an endpoint with measured loss:\n%s", out)
+	}
+}
+
 func TestSpeedTargets(t *testing.T) {
 	defer func(saved []netip.Prefix) { pools = saved }(pools)
 	pools, _ = parseTargets("8.47.69.0/24,188.114.96.0/24")
@@ -1236,6 +1302,63 @@ func TestShowsSpeed(t *testing.T) {
 		if got := showsSpeed(c.opts); got != c.want {
 			t.Errorf("%s: showsSpeed = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestPrintBest(t *testing.T) {
+	run := protoRun{kindWG, protoWG}
+	ep := endpointResult{endpoint: "1.2.3.4:2408", ok: true, durable: true}
+
+	var buf bytes.Buffer
+	if err := printBest(&buf, phaseResult{run, []endpointResult{ep}}); err != nil {
+		t.Fatalf("printBest: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != ep.endpoint {
+		t.Errorf("-best printed %q, want %q", got, ep.endpoint)
+	}
+
+	buf.Reset()
+	torn := phaseResult{run, []endpointResult{{endpoint: ep.endpoint, ok: true}}}
+	switch err := printBest(&buf, torn); {
+	case err == nil:
+		t.Error("-best with nothing but torn-down endpoints reported success")
+	case err.Error() != noWorkingMsg:
+		t.Errorf("torn-down run failed with %q, want %q", err, noWorkingMsg)
+	}
+	if buf.Len() > 0 {
+		t.Errorf("-best printed an endpoint for a torn-down run: %q", buf.String())
+	}
+}
+
+func TestWriteConfFile(t *testing.T) {
+	run := protoRun{kindWG, protoWG}
+	ep := endpointResult{endpoint: "1.2.3.4:2408", ok: true, durable: true}
+	working := phaseResult{run, []endpointResult{ep}}
+
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "wg.conf")
+	if err := writeConfFile(options{conf: conf}, working); err != nil {
+		t.Fatalf("writeConfFile: %v", err)
+	}
+	if _, err := os.Stat(conf); err != nil {
+		t.Fatalf("-conf reported success without writing the file: %v", err)
+	}
+
+	missing := filepath.Join(dir, "no-such-dir", "wg.conf")
+	if err := writeConfFile(options{conf: missing}, working); err == nil {
+		t.Error("unwritable -conf path reported success")
+	}
+
+	torn := phaseResult{run, []endpointResult{{endpoint: ep.endpoint, ok: true}}}
+	tornConf := filepath.Join(dir, "torn.conf")
+	switch err := writeConfFile(options{conf: tornConf}, torn); {
+	case err == nil:
+		t.Error("-conf with nothing but torn-down endpoints reported success")
+	case err.Error() != noWorkingMsg:
+		t.Errorf("torn-down run failed with %q, want %q", err, noWorkingMsg)
+	}
+	if _, err := os.Stat(tornConf); err == nil {
+		t.Error("a config was written for a torn-down endpoint")
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -82,7 +83,9 @@ func runRegisterCmd(ctx context.Context, opts options) error {
 
 	var existing account
 	if !opts.freshAccount {
-		existing, _ = loadAccount(opts.accountPath)
+		if existing, err = accountToRotate(opts.accountPath); err != nil {
+			return err
+		}
 	}
 
 	a, err := obtainAccount(ctx, opts, ips, timeout, existing)
@@ -188,24 +191,30 @@ func runScanCmd(ctx context.Context, opts options) error {
 		})
 	}
 
+	// Held rather than returned: the scan itself succeeded, so the report file is
+	// still written and only the exit status carries the failure.
+	var outErr error
 	switch {
 	case opts.best:
-		printBest(ph)
+		outErr = printBest(os.Stdout, ph)
 	case opts.conf == confStdout:
 	default:
 		writeConsole(os.Stdout, ph, consoleRenderer(os.Stdout), opts.tunPingCheck)
 	}
+
 	if opts.conf != "" {
-		writeConfFile(opts, ph)
+		if err := writeConfFile(opts, ph); outErr == nil {
+			outErr = err
+		}
 	}
 
 	if opts.noReport {
-		return nil
+		return outErr
 	}
 
 	reportPath := opts.output
 	if reportPath == "" && (opts.best || opts.conf == confStdout) {
-		return nil
+		return outErr
 	}
 	if reportPath == "" {
 		reportPath = fmt.Sprintf("warpscout-report-%s.txt", time.Now().Format("2006-01-02-150405"))
@@ -215,7 +224,7 @@ func runScanCmd(ctx context.Context, opts options) error {
 	} else {
 		fmt.Fprintln(os.Stderr, errPal.dim(fmt.Sprintf("\nFull report written to %s", reportPath)))
 	}
-	return nil
+	return outErr
 }
 
 func showsSpeed(opts options) bool {
@@ -342,8 +351,8 @@ func noEndpointMsg(opts options) string {
 	if len(filters) > 0 {
 		return "every endpoint was excluded by " + strings.Join(filters, " and ")
 	}
-	if opts.proto == protoMASQUE {
-		return "no MASQUE endpoint passed data - this network blocks it, try -p awg"
+	if opts.proto == protoMASQUE || opts.proto == protoMASQUEH2 {
+		return masqueBlockedMsg
 	}
 	if opts.genI1 == "" {
 		if opts.proto == protoAWG {
@@ -354,13 +363,15 @@ func noEndpointMsg(opts options) string {
 	return "no working endpoints found"
 }
 
-const noWorkingMsg = "every matching endpoint was torn down mid-stream"
+const (
+	noWorkingMsg     = "every matching endpoint was torn down mid-stream"
+	masqueBlockedMsg = "no MASQUE endpoint passed data - this network blocks it, try -p awg"
+)
 
-func writeConfFile(opts options, ph phaseResult) {
+func writeConfFile(opts options, ph phaseResult) error {
 	best, ok := bestOverall(ph)
 	if !ok {
-		fmt.Fprintln(os.Stderr, errPal.fail(noWorkingMsg))
-		return
+		return fmt.Errorf("%s", noWorkingMsg)
 	}
 	// The separator goes to stderr: on a terminal it still splits the config off
 	// the progress lines, and "-conf - > file" stays free of a leading blank line.
@@ -368,11 +379,10 @@ func writeConfFile(opts options, ph phaseResult) {
 		fmt.Fprintln(os.Stderr)
 	}
 	if err := writeConf(opts, best.endpoint, ph.run); err != nil {
-		fmt.Fprintln(os.Stderr, errPal.fail(fmt.Sprintf("failed to write %s: %v", opts.conf, err)))
-		return
+		return fmt.Errorf("failed to write %s: %v", opts.conf, err)
 	}
 	if opts.conf == confStdout {
-		return
+		return nil
 	}
 	fmt.Fprintln(os.Stderr, errPal.dim(fmt.Sprintf("\n%s config for %s written to %s", ph.run.name, best.endpoint, opts.conf)))
 	if outer != nil {
@@ -392,6 +402,7 @@ func writeConfFile(opts options, ph phaseResult) {
 				"  run it with: usque socks -c %s -P %s -s %s%s", opts.conf, port, masqueSNI, h2)))
 		}
 	}
+	return nil
 }
 
 func bestOverall(ph phaseResult) (endpointResult, bool) {
@@ -405,13 +416,13 @@ func bestOverall(ph phaseResult) (endpointResult, bool) {
 	return best, found
 }
 
-func printBest(ph phaseResult) {
+func printBest(w io.Writer, ph phaseResult) error {
 	best, ok := bestOverall(ph)
 	if !ok {
-		fmt.Fprintln(os.Stderr, errPal.fail(noWorkingMsg))
-		os.Exit(1)
+		return fmt.Errorf("%s", noWorkingMsg)
 	}
-	fmt.Println(best.endpoint)
+	fmt.Fprintln(w, best.endpoint)
+	return nil
 }
 
 func runScanUI(ctx context.Context, cancel context.CancelFunc, opts options, run protoRun, ips []netip.Addr, timeout time.Duration, header, quitHint string) (phaseResult, error) {
